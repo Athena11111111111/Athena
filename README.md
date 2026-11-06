@@ -38,6 +38,8 @@ The dashboard reports connectivity and validation failures and preserves the las
 
 See [backend/README.md](backend/README.md) for the seven required CSV columns, preprocessing, limits, API endpoints, and evaluation caveats. Real traffic data is not bundled.
 
+Ready-to-upload **synthetic** training/evaluation CSVs and validation-error examples are in [datasets/synthetic](datasets/synthetic/README.md). Start with `synthetic_training_benign.csv`, then analyze `synthetic_test_mixed_labeled.csv`. These files exercise the application; they do not establish real-world detection accuracy.
+
 ## Validate
 
 From the repository root:

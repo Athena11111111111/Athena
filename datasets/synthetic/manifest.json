@@ -1,0 +1,122 @@
+{
+  "synthetic": true,
+  "generator": "scripts/generate_test_sets.py",
+  "note": "Artificial demo distributions, not CIC-IDS2017, captured traffic, or proof of real-world accuracy.",
+  "datasets": [
+    {
+      "file": "synthetic_training_benign.csv",
+      "rows": 1200,
+      "seed": 101,
+      "purpose": "Upload as Training CSV; contamination 0.05.",
+      "expected_http_status": 200,
+      "label_counts": {
+        "BENIGN": 1200
+      },
+      "sha256": "807a7f46b701b23299f3eac2d95ab98c948a88bdb3a790f7d70ee83ecac73480"
+    },
+    {
+      "file": "synthetic_test_mixed_labeled.csv",
+      "rows": 450,
+      "seed": 202,
+      "purpose": "Analyze after training: 360 benign and 90 simulated anomalous flows.",
+      "expected_http_status": 200,
+      "label_counts": {
+        "SYNTHETIC_HIGH_VOLUME": 30,
+        "BENIGN": 360,
+        "SYNTHETIC_LONG_DURATION": 30,
+        "SYNTHETIC_SYN_BURST": 30
+      },
+      "sha256": "32db7d416ba91f5793cfb8f527f8da4cdc885bbf9b5c51cba8ed1e236884a523"
+    },
+    {
+      "file": "synthetic_test_benign_only.csv",
+      "rows": 300,
+      "seed": 303,
+      "purpose": "Analyze to inspect false positives on separately generated benign flows.",
+      "expected_http_status": 200,
+      "label_counts": {
+        "BENIGN": 300
+      },
+      "sha256": "07672dfca439300f998e72edec597e49d29bcaaca3d219981c2f0590d25555e6"
+    },
+    {
+      "file": "synthetic_test_unlabeled.csv",
+      "rows": 450,
+      "seed": 202,
+      "purpose": "Same features/order as mixed labeled test; analysis has no evaluation metrics.",
+      "expected_http_status": 200,
+      "label_counts": {},
+      "sha256": "d96633a86c6416c03ec923847409303127283aca5b49d0e2def91c9ff6bb93db"
+    },
+    {
+      "file": "synthetic_test_dirty.csv",
+      "rows": 30,
+      "seed": 404,
+      "purpose": "Analyze: eight invalid values should be imputed; padded headers should be trimmed.",
+      "expected_http_status": 200,
+      "label_counts": {
+        "BENIGN": 24,
+        "SYNTHETIC_LONG_DURATION": 2,
+        "SYNTHETIC_SYN_BURST": 2,
+        "SYNTHETIC_HIGH_VOLUME": 2
+      },
+      "sha256": "4289756f24b37acdb1683ac801b595253241d05cd09c4e5d928032c246403ae0"
+    },
+    {
+      "file": "invalid/missing_column.csv",
+      "rows": 25,
+      "seed": 505,
+      "purpose": "Analyze: reject missing Flow Bytes/s.",
+      "expected_http_status": 422,
+      "label_counts": {
+        "BENIGN": 25
+      },
+      "sha256": "69be5b9ae2ba6b57bc72a08cd3cbb78a1a60838737d1f10ed9dc6f77b759727d"
+    },
+    {
+      "file": "invalid/all_invalid_row.csv",
+      "rows": 25,
+      "seed": 505,
+      "purpose": "Analyze: reject a row with no valid numeric features.",
+      "expected_http_status": 422,
+      "label_counts": {
+        "BENIGN": 25
+      },
+      "sha256": "c3aaf36df084d8a59764f75ac795108e16b5b813e674cebc588b58b5269138fa"
+    },
+    {
+      "file": "invalid/empty_label.csv",
+      "rows": 25,
+      "seed": 505,
+      "purpose": "Train or analyze: reject an empty label.",
+      "expected_http_status": 422,
+      "label_counts": {
+        "": 1,
+        "BENIGN": 24
+      },
+      "sha256": "1ee4a51c4d6e5312c22f1ddf75eddc3fa11992e6934beea6785873394692d2aa"
+    },
+    {
+      "file": "invalid/too_few_benign.csv",
+      "rows": 10,
+      "seed": 505,
+      "purpose": "Train: reject fewer than 20 benign flows.",
+      "expected_http_status": 422,
+      "label_counts": {
+        "BENIGN": 10
+      },
+      "sha256": "5bdcb8765b6974b880c1fb3b4a1f1bbbb44ac7c8f6847338f0939eb90aaa7511"
+    },
+    {
+      "file": "invalid/duplicate_header.csv",
+      "rows": 25,
+      "seed": 505,
+      "purpose": "Train or analyze: reject duplicate headers.",
+      "expected_http_status": 422,
+      "label_counts": {
+        "BENIGN": 25
+      },
+      "sha256": "6c8f6780bb1b145c28d57769c99d196dcde47b4bd5e73e02da47c6b0b9e1581a"
+    }
+  ]
+}
