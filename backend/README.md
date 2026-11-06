@@ -1,6 +1,6 @@
 # Athena backend
 
-Python 3.12 API for the existing Next.js dashboard. No external APIs, dataset download, credentials, or database are required. The frontend currently still uses its own mock data; this API provides the integration contract.
+Python 3.12 API for the Next.js dashboard. No external APIs, dataset download, credentials, or database are required. The frontend calls this API through the Next.js `/api/*` proxy; see the root README for running both services and browser tests.
 
 From the repository root:
 

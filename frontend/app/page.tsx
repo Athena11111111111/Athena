@@ -1,104 +1,177 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import {
-  Activity,
-  AlertTriangle,
-  ArrowDownToLine,
-  BarChart3,
-  CheckCircle2,
-  ChevronDown,
-  CircleHelp,
-  Database,
-  FileText,
-  Gauge,
-  Menu,
-  Moon,
-  Network,
-  Search,
-  ShieldCheck,
-  Sun,
-  Upload,
-  X,
-} from 'lucide-react'
-import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
+import { useEffect, useRef, useState } from 'react'
+import { Activity, BarChart3, CircleHelp, Database, FileText, Gauge, Loader2, Menu, Moon, ShieldCheck, Sun, Upload } from 'lucide-react'
+import { api, ApiError, type Analysis, type ModelInfo } from '@/lib/api'
+import { AnalysisCharts, button, EvaluationCard, FlowResults, format } from '@/components/analysis-results'
 
-const flows = [
-  { id: 'FL-004281', src: '10.0.14.28', dst: '172.16.4.11', port: 443, duration: 183, packets: 284, score: 0.12, status: 'Normal' },
-  { id: 'FL-004280', src: '10.0.12.91', dst: '10.0.5.22', port: 22, duration: 4812, packets: 1842, score: 0.94, status: 'Anomalous' },
-  { id: 'FL-004279', src: '192.168.1.42', dst: '8.8.8.8', port: 53, duration: 38, packets: 14, score: 0.08, status: 'Normal' },
-  { id: 'FL-004278', src: '10.0.8.17', dst: '172.16.2.8', port: 8080, duration: 624, packets: 912, score: 0.67, status: 'Anomalous' },
-  { id: 'FL-004277', src: '10.0.22.103', dst: '10.0.1.4', port: 443, duration: 91, packets: 72, score: 0.15, status: 'Normal' },
-  { id: 'FL-004276', src: '10.0.4.61', dst: '172.16.9.31', port: 445, duration: 2301, packets: 440, score: 0.82, status: 'Anomalous' },
-  { id: 'FL-004275', src: '192.168.1.88', dst: '1.1.1.1', port: 443, duration: 217, packets: 191, score: 0.18, status: 'Normal' },
+const input = 'w-full rounded-lg border border-border bg-background px-3 py-2 text-sm disabled:opacity-50'
+const navigation = [
+  { label: 'Overview', href: '#overview', icon: Gauge },
+  { label: 'Anomaly results', href: '#results', icon: BarChart3 },
+  { label: 'Model information', href: '#model', icon: Database },
+  { label: 'Upload dataset', href: '#upload', icon: Upload },
+  { label: 'Documentation', href: '#docs', icon: CircleHelp },
 ]
-
-const scoreDistribution = [
-  { range: '0.0–0.2', normal: 1264, anomalous: 0 },
-  { range: '0.2–0.4', normal: 418, anomalous: 0 },
-  { range: '0.4–0.6', normal: 0, anomalous: 84 },
-  { range: '0.6–0.8', normal: 0, anomalous: 51 },
-  { range: '0.8–1.0', normal: 0, anomalous: 29 },
-]
-
-const trafficTrend = [
-  { time: '09:00', flows: 182 }, { time: '10:00', flows: 246 }, { time: '11:00', flows: 221 },
-  { time: '12:00', flows: 308 }, { time: '13:00', flows: 286 }, { time: '14:00', flows: 352 },
-  { time: '15:00', flows: 299 }, { time: '16:00', flows: 344 },
-]
-
-function MetricCard({ label, value, hint, icon: Icon, accent }: { label: string; value: string; hint: string; icon: typeof Activity; accent?: string }) {
-  return <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
-    <div className="flex items-start justify-between"><div className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Icon className="size-4" /></div><span className="text-xs font-medium text-muted-foreground">{hint}</span></div>
-    <p className="mt-5 text-sm text-muted-foreground">{label}</p><p className={`mt-1 text-2xl font-semibold tracking-tight ${accent ?? 'text-foreground'}`}>{value}</p>
-  </div>
-}
+type Source = { kind: 'demo' } | { kind: 'upload'; file: File }
+type Run = { source: Source; analysis: Analysis }
 
 export default function Page() {
   const [dark, setDark] = useState(false)
-  const [search, setSearch] = useState('')
-  const [filter, setFilter] = useState('All flows')
-  const [selected, setSelected] = useState(flows[1])
-  const [fileName, setFileName] = useState('cic-ids2017-sample.csv')
   const [mobileNav, setMobileNav] = useState(false)
-  const filtered = useMemo(() => flows.filter((flow) => {
-    const matchesSearch = Object.values(flow).join(' ').toLowerCase().includes(search.toLowerCase())
-    const matchesFilter = filter === 'All flows' || flow.status === filter
-    return matchesSearch && matchesFilter
-  }), [search, filter])
+  const [connection, setConnection] = useState<'checking' | 'online' | 'offline'>('checking')
+  const [model, setModel] = useState<ModelInfo | null>(null)
+  const [trainingFile, setTrainingFile] = useState<File | null>(null)
+  const [analysisFile, setAnalysisFile] = useState<File | null>(null)
+  const [contamination, setContamination] = useState('0.05')
+  const [run, setRun] = useState<Run | null>(null)
+  const [threshold, setThreshold] = useState(0.5)
+  const [busy, setBusy] = useState('')
+  const operation = useRef(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  // Remount result controls after a successful request to discard stale selections.
+  const [resultVersion, setResultVersion] = useState(0)
+  const analysis = run?.analysis
+  const disabled = Boolean(busy) || connection === 'checking'
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10_000)
+    let active = true
+    async function check() {
+      try {
+        const health = await api.health(controller.signal)
+        const existing = health.model_ready ? await api.model(controller.signal) : null
+        if (active) { setConnection('online'); setModel(existing) }
+      } catch {
+        if (active) setConnection('offline')
+      } finally { clearTimeout(timer) }
+    }
+    void check()
+    return () => { active = false; clearTimeout(timer); controller.abort() }
+  }, [])
+
+  function clearResults() {
+    setRun(null); setResultVersion(version => version + 1)
+  }
+
+  function fail(cause: unknown) {
+    setError(cause instanceof Error ? cause.message : 'Analysis failed. Please retry.')
+    if (cause instanceof ApiError) {
+      if (cause.status === 0 || cause.status >= 500) setConnection('offline')
+      else setConnection('online')
+      if (cause.status === 409 && cause.message.includes('Train a model')) {
+        setModel(null); clearResults()
+      }
+    }
+  }
+
+  async function perform(label: string, action: () => Promise<void>) {
+    if (operation.current) return
+    operation.current = true
+    setBusy(label); setError(''); setNotice('')
+    try { await action(); setConnection('online') } catch (cause) { fail(cause) }
+    finally { operation.current = false; setBusy('') }
+  }
+
+  function chooseFile(file: File | undefined, target: 'train' | 'analyze') {
+    setError(''); setNotice('')
+    const setFile = target === 'train' ? setTrainingFile : setAnalysisFile
+    setFile(null)
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.csv')) { setError('Choose a CSV file.'); return }
+    if (!file.size || file.size > 10 * 1024 * 1024) { setError('Choose a nonempty CSV no larger than 10 MiB.'); return }
+    setFile(file)
+  }
+
+  function applyRun(source: Source, result: Analysis) {
+    setRun({ source, analysis: result }); setThreshold(result.threshold)
+    setResultVersion(version => version + 1)
+  }
+
+  function train() {
+    if (!trainingFile) return
+    const amount = Number(contamination)
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 0.5) {
+      setError('Contamination must be greater than 0 and at most 0.5.'); return
+    }
+    void perform('Training model…', async () => {
+      const trained = await api.train(trainingFile, amount)
+      setModel(trained); clearResults(); setThreshold(trained.threshold)
+      setNotice(`Model trained on ${format(trained.training_rows)} benign flows. Upload a separate CSV to analyze traffic.`)
+    })
+  }
+
+  function demo() {
+    void perform('Running synthetic demo…', async () => {
+      const result = await api.demo(0.05)
+      setModel(result.model); applyRun({ kind: 'demo' }, result.analysis)
+      setNotice('Synthetic demonstration loaded. These results do not measure real-world attack detection.')
+    })
+  }
+
+  function analyze() {
+    if (!analysisFile || !model) return
+    void perform('Analyzing CSV…', async () => {
+      applyRun({ kind: 'upload', file: analysisFile }, await api.analyze(analysisFile))
+    })
+  }
+
+  function updateAnalysis(offset = 0, cutoff = analysis?.threshold) {
+    if (!run || !model) return
+    void perform('Updating results…', async () => {
+      if (run.source.kind === 'demo') {
+        const result = await api.demo(model.contamination, cutoff)
+        setModel(result.model); applyRun(run.source, result.analysis)
+      } else {
+        applyRun(run.source, await api.analyze(run.source.file, cutoff, offset))
+      }
+    })
+  }
+
+  const datasetName = run?.source.kind === 'upload' ? run.source.file.name : run ? 'Synthetic holdout' : 'No analysis yet'
 
   return <div className={dark ? 'dark' : ''}>
     <div className="min-h-screen bg-background text-foreground">
       <header className="flex h-16 items-center justify-between border-b border-border bg-card px-5 lg:px-8">
         <div className="flex items-center gap-3"><button className="rounded-md p-2 hover:bg-muted lg:hidden" aria-label="Open navigation" onClick={() => setMobileNav(!mobileNav)}><Menu className="size-5" /></button><div className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground"><ShieldCheck className="size-4" /></div><span className="text-lg font-semibold tracking-tight">Athena</span><span className="hidden rounded-full border border-border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground sm:inline">Analyst workspace</span></div>
-        <div className="flex items-center gap-2"><span className="hidden items-center gap-1.5 text-xs text-muted-foreground md:flex"><span className="size-1.5 rounded-full bg-emerald-500" />API ready</span><button className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Toggle theme" onClick={() => setDark(!dark)}>{dark ? <Sun className="size-4" /> : <Moon className="size-4" />}</button><div className="ml-1 flex size-8 items-center justify-center rounded-full bg-muted text-xs font-semibold">JD</div></div>
+        <div className="flex items-center gap-3"><span role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground"><span className={`size-1.5 rounded-full ${connection === 'online' ? 'bg-emerald-500' : connection === 'offline' ? 'bg-red-500' : 'bg-amber-500'}`} />{connection === 'online' ? 'API connected' : connection === 'offline' ? 'API unavailable' : 'Connecting…'}</span><button className="rounded-md p-2 hover:bg-muted" aria-label="Toggle theme" onClick={() => setDark(!dark)}>{dark ? <Sun className="size-4" /> : <Moon className="size-4" />}</button></div>
       </header>
       <div className="flex">
-        <aside className={`${mobileNav ? 'flex' : 'hidden'} absolute inset-x-0 top-16 z-10 min-h-[calc(100vh-4rem)] flex-col border-r border-border bg-card p-4 lg:static lg:flex lg:min-h-[calc(100vh-4rem)] lg:w-60 lg:shrink-0`}>
-          <nav className="flex flex-col gap-1 text-sm"><p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Workspace</p><a className="flex items-center gap-3 rounded-lg bg-muted px-3 py-2.5 font-medium" href="#overview"><Gauge className="size-4" />Overview</a><a className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-muted hover:text-foreground" href="#results"><BarChart3 className="size-4" />Anomaly results</a><a className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-muted hover:text-foreground" href="#model"><Database className="size-4" />Model information</a><p className="mb-2 mt-7 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Resources</p><a className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-muted hover:text-foreground" href="#upload"><Upload className="size-4" />Upload dataset</a><a className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-muted hover:text-foreground" href="#docs"><CircleHelp className="size-4" />Documentation</a></nav>
-          <div className="mt-auto hidden rounded-lg border border-border bg-muted/50 p-3 text-xs lg:block"><div className="mb-2 flex items-center gap-2 font-medium"><Activity className="size-3.5 text-blue-600" />Demo workspace</div><p className="leading-relaxed text-muted-foreground">Predictions shown here use labeled mock data for demonstration.</p></div>
+        <aside className={`${mobileNav ? 'flex' : 'hidden'} absolute inset-x-0 top-16 z-10 flex-col border-r border-border bg-card p-4 lg:static lg:flex lg:w-60 lg:shrink-0`}>
+          <nav className="flex flex-col gap-1 text-sm"><p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Workspace</p>{navigation.map(({ label, href, icon: Icon }) => <a key={href} className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-muted hover:text-foreground" href={href} onClick={() => setMobileNav(false)}><Icon className="size-4" />{label}</a>)}</nav>
+          <div className="mt-8 rounded-lg border border-border bg-muted/50 p-3 text-xs"><div className="mb-2 flex items-center gap-2 font-medium"><Activity className="size-3.5 text-blue-600" />{model?.synthetic ? 'Synthetic baseline' : model ? 'Uploaded baseline' : 'No model loaded'}</div><p className="leading-relaxed text-muted-foreground">{model?.synthetic ? 'Synthetic results validate the workflow, not real-world detection accuracy.' : 'Statistical anomalies are evidence for investigation, not proof of an attack.'}</p></div>
         </aside>
         <main className="min-w-0 flex-1" id="overview"><div className="mx-auto max-w-[1500px] px-5 py-8 lg:px-10 lg:py-10">
-          <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><span>Workspace</span><span>/</span><span className="text-foreground">Overview</span></div><h1 className="text-2xl font-semibold tracking-tight">Network overview</h1><p className="mt-1 text-sm text-muted-foreground">Review unusual traffic patterns from your latest analysis.</p></div><button className="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:opacity-90" onClick={() => document.getElementById('upload')?.scrollIntoView({ behavior: 'smooth' })}><Upload className="size-4" data-icon="inline-start" />Analyze new dataset</button></div>
-          <div className="mb-7 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="Total network flows" value="1,846" hint="Latest run" icon={Network} /><MetricCard label="Normal flows" value="1,682" hint="91.1%" icon={CheckCircle2} /><MetricCard label="Anomalous flows" value="164" hint="Requires review" icon={AlertTriangle} accent="text-red-600" /><MetricCard label="Anomaly percentage" value="8.9%" hint="+1.4% vs baseline" icon={Activity} accent="text-blue-600" /></div>
-          <div className="mb-7 grid gap-5 xl:grid-cols-[1.4fr_1fr]"><div className="rounded-xl border border-border bg-card p-5 shadow-sm"><div className="mb-5 flex items-start justify-between"><div><h2 className="font-semibold">Traffic volume</h2><p className="mt-1 text-xs text-muted-foreground">Flow count by hour · Today</p></div><button className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground">Today <ChevronDown className="size-3" /></button></div><div className="h-56"><ResponsiveContainer width="100%" height="100%"><AreaChart data={trafficTrend} margin={{ left: -20, right: 8, top: 8, bottom: 0 }}><defs><linearGradient id="flowFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#2563eb" stopOpacity={0.16} /><stop offset="100%" stopColor="#2563eb" stopOpacity={0} /></linearGradient></defs><CartesianGrid vertical={false} stroke="currentColor" opacity={0.08} /><XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: 'currentColor', opacity: .55 }} /><YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: 'currentColor', opacity: .55 }} /><Tooltip contentStyle={{ borderRadius: 8, border: '1px solid hsl(var(--border))', background: 'hsl(var(--card))', fontSize: 12 }} /><Area type="monotone" dataKey="flows" stroke="#2563eb" strokeWidth={2} fill="url(#flowFill)" /></AreaChart></ResponsiveContainer></div></div><div className="rounded-xl border border-border bg-card p-5 shadow-sm"><div className="mb-5"><h2 className="font-semibold">Flow distribution</h2><p className="mt-1 text-xs text-muted-foreground">Normal vs. anomalous records</p></div><div className="flex items-center gap-5"><div className="h-44 w-44 shrink-0"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={[{ name: 'Normal', value: 1682 }, { name: 'Anomalous', value: 164 }]} dataKey="value" innerRadius={54} outerRadius={78} paddingAngle={2}><Cell fill="#cbd5e1" /><Cell fill="#dc2626" /></Pie><Tooltip /></PieChart></ResponsiveContainer></div><div className="flex flex-col gap-4 text-sm"><div><div className="flex items-center gap-2 text-muted-foreground"><span className="size-2 rounded-full bg-slate-300" />Normal</div><p className="mt-1 font-semibold">1,682 <span className="ml-1 text-xs font-normal text-muted-foreground">91.1%</span></p></div><div><div className="flex items-center gap-2 text-muted-foreground"><span className="size-2 rounded-full bg-red-600" />Anomalous</div><p className="mt-1 font-semibold">164 <span className="ml-1 text-xs font-normal text-muted-foreground">8.9%</span></p></div></div></div></div></div>
-          <div className="mb-7 grid gap-5 lg:grid-cols-[1fr_1fr]" id="model"><div className="rounded-xl border border-border bg-card p-5 shadow-sm"><div className="mb-5"><h2 className="font-semibold">Anomaly score distribution</h2><p className="mt-1 text-xs text-muted-foreground">Higher scores indicate less typical behavior</p></div><div className="h-52"><ResponsiveContainer width="100%" height="100%"><BarChart data={scoreDistribution} margin={{ left: -20, right: 8, top: 8, bottom: 0 }}><CartesianGrid vertical={false} stroke="currentColor" opacity={0.08} /><XAxis dataKey="range" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: 'currentColor', opacity: .55 }} /><YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: 'currentColor', opacity: .55 }} /><Tooltip cursor={{ fill: 'currentColor', opacity: .04 }} contentStyle={{ borderRadius: 8, border: '1px solid hsl(var(--border))', background: 'hsl(var(--card))', fontSize: 12 }} /><Bar dataKey="normal" name="Normal" fill="#94a3b8" radius={[3, 3, 0, 0]} /><Bar dataKey="anomalous" name="Anomalous" fill="#dc2626" radius={[3, 3, 0, 0]} /></BarChart></ResponsiveContainer></div></div><div className="rounded-xl border border-border bg-card p-5 shadow-sm"><div className="mb-4 flex items-center justify-between"><div><h2 className="font-semibold">Model information</h2><p className="mt-1 text-xs text-muted-foreground">Current analysis configuration</p></div><span className="rounded-full bg-blue-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-blue-700 dark:bg-blue-950 dark:text-blue-300">Isolation Forest</span></div><div className="grid grid-cols-2 gap-3 text-sm"><div className="rounded-lg bg-muted/60 p-3"><p className="text-xs text-muted-foreground">Contamination</p><p className="mt-1 font-semibold">0.05</p></div><div className="rounded-lg bg-muted/60 p-3"><p className="text-xs text-muted-foreground">Features analyzed</p><p className="mt-1 font-semibold">12 network signals</p></div><div className="rounded-lg bg-muted/60 p-3"><p className="text-xs text-muted-foreground">Training baseline</p><p className="mt-1 font-semibold">CIC-IDS2017</p></div><div className="rounded-lg bg-muted/60 p-3"><p className="text-xs text-muted-foreground">Last trained</p><p className="mt-1 font-semibold">Nov 05, 2026</p></div></div><p className="mt-4 border-t border-border pt-4 text-xs leading-relaxed text-muted-foreground">Athena identifies unusual patterns in network traffic. A flagged flow is not necessarily malicious and should be investigated in context.</p></div></div>
-          <section className="mb-7 rounded-xl border border-dashed border-border bg-muted/20 p-5" id="upload"><div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center"><div className="flex items-center gap-3"><div className="flex size-10 items-center justify-center rounded-lg bg-card shadow-sm"><FileText className="size-5 text-blue-600" /></div><div><h2 className="font-semibold">Dataset loaded</h2><p className="mt-1 text-xs text-muted-foreground"><span className="font-medium text-foreground">{fileName}</span> · 1,846 records · 12 features</p></div></div><div className="flex w-full gap-2 sm:w-auto"><label className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium shadow-sm hover:bg-muted sm:flex-none"><Upload className="size-4" />Replace CSV<input type="file" accept=".csv" className="sr-only" onChange={(e) => e.target.files?.[0] && setFileName(e.target.files[0].name)} /></label><button className="rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium shadow-sm hover:bg-muted" onClick={() => setFileName('cic-ids2017-sample.csv')}>Use sample</button></div></div></section>
-          <section className="rounded-xl border border-border bg-card shadow-sm" id="results"><div className="flex flex-col gap-4 border-b border-border p-5 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold">Anomaly results</h2><p className="mt-1 text-xs text-muted-foreground">Showing {filtered.length} of {flows.length} preview records · Mock analysis data</p></div><div className="flex flex-col gap-2 sm:flex-row"><div className="relative"><Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" /><input aria-label="Search flows" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search flows..." className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-sm outline-none ring-offset-background focus:ring-2 focus:ring-ring sm:w-48" /></div><select aria-label="Filter flow status" value={filter} onChange={(e) => setFilter(e.target.value)} className="h-9 rounded-lg border border-border bg-background px-3 text-sm outline-none"><option>All flows</option><option>Normal</option><option>Anomalous</option></select><button className="flex h-9 items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm font-medium hover:bg-muted"><ArrowDownToLine className="size-4" />Export</button></div></div><div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="bg-muted/40 text-xs text-muted-foreground"><tr><th className="px-5 py-3 font-medium">Flow ID</th><th className="px-5 py-3 font-medium">Source</th><th className="px-5 py-3 font-medium">Destination</th><th className="px-5 py-3 font-medium">Port</th><th className="px-5 py-3 font-medium">Duration</th><th className="px-5 py-3 font-medium">Packets</th><th className="px-5 py-3 font-medium">Score</th><th className="px-5 py-3 font-medium">Status</th></tr></thead><tbody className="divide-y divide-border">{filtered.map((flow) => <tr key={flow.id} className={`cursor-pointer transition-colors hover:bg-muted/40 ${selected.id === flow.id ? 'bg-blue-50/60 dark:bg-blue-950/20' : ''}`} onClick={() => setSelected(flow)}><td className="whitespace-nowrap px-5 py-3.5 font-medium">{flow.id}</td><td className="whitespace-nowrap px-5 py-3.5 font-mono text-xs text-muted-foreground">{flow.src}</td><td className="whitespace-nowrap px-5 py-3.5 font-mono text-xs text-muted-foreground">{flow.dst}</td><td className="px-5 py-3.5 text-muted-foreground">{flow.port}</td><td className="px-5 py-3.5 text-muted-foreground">{flow.duration.toLocaleString()} ms</td><td className="px-5 py-3.5 text-muted-foreground">{flow.packets.toLocaleString()}</td><td className={`px-5 py-3.5 font-mono text-xs font-semibold ${flow.score > .5 ? 'text-red-600' : 'text-foreground'}`}>{flow.score.toFixed(2)}</td><td className="px-5 py-3.5"><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-xs font-medium ${flow.status === 'Anomalous' ? 'bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300' : 'bg-muted text-muted-foreground'}`}><span className={`size-1.5 rounded-full ${flow.status === 'Anomalous' ? 'bg-red-600' : 'bg-slate-400'}`} />{flow.status}</span></td></tr>)}</tbody></table></div></section>
-          <div className="mt-5 flex items-center justify-between rounded-xl border border-border bg-card p-4 shadow-sm"><div className="flex items-center gap-3"><div className="flex size-9 items-center justify-center rounded-lg bg-red-50 text-red-600 dark:bg-red-950"><AlertTriangle className="size-4" /></div><div><p className="text-sm font-medium">Selected flow · {selected.id}</p><p className="text-xs text-muted-foreground">{selected.status === 'Anomalous' ? 'Unusual behavior detected — investigate in context.' : 'Within expected traffic patterns.'}</p></div></div><button className="hidden rounded-md p-2 text-muted-foreground hover:bg-muted sm:block" aria-label="Dismiss selected flow"><X className="size-4" /></button></div>
+          <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="mb-2 text-xs text-muted-foreground">Workspace / Overview</p><h1 className="text-2xl font-semibold tracking-tight">Network overview</h1><p className="mt-1 text-sm text-muted-foreground">Review unusual traffic patterns from your latest analysis.</p></div><button className={button} onClick={() => document.getElementById('upload')?.scrollIntoView({ behavior: 'smooth' })}><Upload className="size-4" />Analyze new dataset</button></div>
+
+          {connection === 'offline' && <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm"><p>The analysis service is unavailable. Start the backend and retry the connection.</p><button className={button} disabled={disabled} onClick={() => void perform('Connecting…', async () => { const health = await api.health(); setModel(health.model_ready ? await api.model() : null); clearResults() })}>Retry connection</button></div>}
+          {error && <div role="alert" aria-label="Analysis error" className="mb-5 rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-300">{error}{analysis && <p className="mt-1">The dashboard still shows the last successful analysis.</p>}</div>}
+          {notice && <p role="status" className="mb-5 rounded-lg border border-border bg-muted/50 p-4 text-sm">{notice}</p>}
+          {busy && <p role="status" aria-live="polite" className="mb-5 flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin" />{busy}</p>}
+
+          <section id="upload" className="mb-7 scroll-mt-4 rounded-xl border border-border bg-card p-5 shadow-sm">
+            <div className="mb-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-start"><div><h2 className="font-semibold">Analyze network traffic</h2><p className="mt-1 text-xs text-muted-foreground">Train a benign baseline, then analyze a separate CSV. Maximum 10 MiB and 50,000 rows per file.</p></div><button className={button} disabled={disabled} onClick={demo}>Use synthetic demo</button></div>
+            <div className="grid gap-6 lg:grid-cols-2">
+              <div className="space-y-3"><h3 className="text-sm font-semibold">1. Train a baseline</h3><p className="text-xs text-muted-foreground">Requires Label values and at least 20 benign flows. Training replaces the current model and clears previous results.</p><label className="block text-sm">Training CSV<input aria-label="Training CSV" type="file" accept=".csv,text/csv" disabled={disabled} className={`${input} mt-1 file:mr-3 file:rounded file:border-0 file:bg-muted file:px-2 file:py-1 file:text-foreground`} onChange={event => { chooseFile(event.target.files?.[0], 'train'); event.target.value = '' }} /></label><p className="min-h-4 break-all text-xs text-muted-foreground">{trainingFile?.name ?? 'No training file selected'}</p><div className="flex flex-wrap items-end gap-3"><label className="text-xs text-muted-foreground">Contamination<input aria-label="Contamination" type="number" min="0.001" max="0.5" step="0.001" value={contamination} disabled={disabled} onChange={event => setContamination(event.target.value)} className={`${input} mt-1 max-w-32`} /></label><button className={button} disabled={disabled || !trainingFile} onClick={train}>Train model</button></div></div>
+              <div className="space-y-3"><h3 className="text-sm font-semibold">2. Analyze traffic</h3><p className="text-xs text-muted-foreground">Uses the loaded model. A Label column is optional and enables evaluation metrics.</p><label className="block text-sm">Analysis CSV<input aria-label="Analysis CSV" type="file" accept=".csv,text/csv" disabled={disabled} className={`${input} mt-1 file:mr-3 file:rounded file:border-0 file:bg-muted file:px-2 file:py-1 file:text-foreground`} onChange={event => { chooseFile(event.target.files?.[0], 'analyze'); event.target.value = '' }} /></label><p className="min-h-4 break-all text-xs text-muted-foreground">{analysisFile?.name ?? 'No analysis file selected'}</p><button className={button} disabled={disabled || !analysisFile || !model} onClick={analyze}>Analyze CSV</button>{!model && <p className="text-xs text-muted-foreground">Train a model or load the synthetic demo first.</p>}</div>
+            </div>
+          </section>
+
+          <div className="mb-4 flex items-start gap-3"><FileText className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><div><p className="break-all text-sm font-medium">{datasetName}</p><p className="mt-1 text-xs text-muted-foreground">{analysis ? `${format(analysis.total_flows)} flows · ${analysis.imputed_values} values filled using benign training medians${analysis.synthetic_model ? ' · Synthetic model' : ''}` : 'Load the synthetic demo or upload CSV files to begin. Results appear after a successful analysis.'}</p></div></div>
+          <AnalysisCharts analysis={analysis} />
+
+          <section id="model" className="mb-7 scroll-mt-4 rounded-xl border border-border bg-card p-5 shadow-sm">
+            <h2 className="font-semibold">Model information</h2>
+            {model ? <><dl className="mt-4 grid grid-cols-2 gap-3 xl:grid-cols-4">{Object.entries({ Algorithm: model.algorithm, 'Training baseline': model.synthetic ? 'Synthetic benign flows' : 'Uploaded benign flows', 'Training rows': format(model.training_rows), 'Features analyzed': model.features.length, Contamination: model.contamination, 'Default threshold': model.threshold.toFixed(3) }).map(([label, value]) => <div key={label} className="rounded-lg bg-muted/60 p-3"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 text-sm font-semibold">{value}</dd></div>)}</dl><p className="mt-4 text-xs leading-relaxed text-muted-foreground">{model.disclaimer}</p></> : <p className="mt-3 text-sm text-muted-foreground">No model loaded. Start with the synthetic demo or train your own baseline.</p>}
+            {analysis && <div className="mt-5 border-t border-border pt-5"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><label className="flex-1 text-sm font-medium" htmlFor="threshold">Anomaly threshold: {threshold.toFixed(3)}<input id="threshold" aria-label="Anomaly threshold" type="range" min="0" max="1" step="0.001" className="mt-3 block w-full accent-blue-600" value={threshold} disabled={disabled} onChange={event => setThreshold(Number(event.target.value))} /></label><button className={button} disabled={disabled || threshold === analysis.threshold} onClick={() => updateAnalysis(0, threshold)}>Apply threshold</button><button className={button} disabled={disabled || !model || analysis.threshold === model.threshold} onClick={() => updateAnalysis(0, model?.threshold)}>Reset threshold</button></div><p className="mt-2 text-xs text-muted-foreground">Lower thresholds flag more flows. Showing results at {analysis.threshold.toFixed(3)}; scores are not attack probabilities.</p></div>}
+          </section>
+
+          {model && <div className="mb-7 grid gap-5 xl:grid-cols-2"><EvaluationCard evaluation={model.evaluation} title="Training holdout evaluation" note={`${model.evaluation_rows} held-out benign and attack flows, evaluated at the model’s default threshold. ${model.evaluation_note}${model.synthetic ? ' Synthetic demonstration only.' : ''}`} />{analysis && <EvaluationCard evaluation={analysis.evaluation} title="Analysis evaluation" note={`Metrics for the entire analyzed CSV at threshold ${analysis.threshold.toFixed(3)}. Use separate testing data to assess real-world performance.${run?.source.kind === 'demo' ? ' Synthetic holdout only.' : ''}`} />}</div>}
+          <FlowResults key={resultVersion} analysis={analysis} features={model?.features ?? []} busy={Boolean(busy)} onPage={offset => updateAnalysis(offset)} />
+
+          <section id="docs" className="mt-7 scroll-mt-4 rounded-xl border border-border bg-muted/20 p-5"><h2 className="font-semibold">CSV guide</h2><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Required columns: Flow Duration, Total Fwd Packets, Total Backward Packets, Flow Bytes/s, Flow Packets/s, SYN Flag Count, Destination Port. Keep units consistent between training and testing; duration values are shown as supplied. Whitespace around headers is trimmed. Missing or infinite values use benign training medians.</p><p className="mt-3 text-sm leading-relaxed text-muted-foreground">Training labels BENIGN and NORMAL are benign; other nonempty labels are treated as attack labels for evaluation. Labels never become prediction features. For reliable evaluation, separate captures and time periods and remove duplicate flows before uploading. A synthetic baseline is for demonstration; train on representative real benign traffic before interpreting real uploads.</p><p className="mt-3 text-xs text-muted-foreground">The model is shared by this local workspace and resets when the backend restarts. CSV selections and analysis results reset when you reload this page. No real CIC-IDS2017 dataset is bundled.</p></section>
         </div></main>
       </div>
     </div>
